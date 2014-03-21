@@ -1,0 +1,8 @@
+{
+	"graph" :
+	{
+		"client_id" : 0,
+		"update_freq" : 14400,
+		"access_token" : "### Replace this string with the access token ###"
+	}
+}
