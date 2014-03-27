@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 
-# fbk_fetch.py -- Uses the Facebook Graph API to grab and store posts locally. 
+# fbk_fetch_3.py -- Uses the Facebook Graph API to grab and store posts locally. 
 #
 # 	Created by Timothy Wright <spartas@gmail.com>
 #		Version 1.0 [March 4th, 2014]
@@ -18,15 +18,24 @@
 #		* NOTE: The zipfile argument for parsing is now _optional_. As a result, the command-line specifier for it has 
 #			changed. As of 3.0, it is necessary to specify -i INPUT_ZIPFILE 
 #		
-# 	Version 1.1 [March 20, 2014]
-# 	* The previous version was heavily influenced by fbk_sanitize_3.py, with only minor adjustments to make it 
-# 		play nice with graph. This is a cleanup release. I've dropped all of the version history (which referred to
-# 		fbk_sanitize{,_3}.py instead.
+# 		Version 1.1 [March 20th, 2014]
+#	 	* The previous version was heavily influenced by fbk_sanitize_3.py, with only minor adjustments to make it 
+# 			play nice with graph. This is a cleanup release. I've dropped all of the version history (which referred to
+# 			fbk_sanitize{,_3}.py instead.
 # 	
-# 	* Despite what v1.0 implies, this really is fbk_fetch_3.py, and not fbk_sanitize.py.
+#	 	* Despite what v1.0 implies, this really is fbk_fetch_3.py, and not fbk_sanitize.py.
 #
-# 	* As a result of cleaning up teh old _sanitize code, I've also removed a lot of unused dependencies. Also, a
-# 		work in progress.
+#	 	* As a result of cleaning up teh old _sanitize code, I've also removed a lot of unused dependencies. Also, a
+# 			work in progress.
+#	
+#		Version 1.2 [March 26th, 2014]
+#		* Bump the limit for Graph API responses to 200 to receive much more data in fewer steps. This parameter is
+#			expected to be configurable in the future.
+#
+#		* Issue requests for paginated requests to support getting a larger set of un-seen requests. This is currently
+#			hard-coded, but will be configurable in a future version.
+#
+#		* 
 #
 # 		NOTE: argparse may or may not be included with your Python distribution. This program 
 # 					relies on both, and will not run without them.
@@ -94,54 +103,61 @@ def fbk_cache( ):
 	fbk_cache_id = [x for l in cur.fetchall() for x in l]
 
 
-	graph_status_url = "https://graph.facebook.com/me/posts?access_token=%s&type=status&fields=id,message,privacy,type" % (obj_config['graph']['access_token'])
+	graph_status_url = "https://graph.facebook.com/me/posts?access_token=%s&type=status&fields=id,message,privacy,type&limit=200" % (obj_config['graph']['access_token'])
 
-	with urllib.request.urlopen(graph_status_url) as r:
+	# 
+	iteration = 0
+	fetch_loop_max = 1 # At some point in the future, this will represent a complete fetch loop
+	while iteration < fetch_loop_max:
 
-		cur.execute( "INSERT INTO txn (`datetime_requested`, `return_code`) VALUES (?, ?)", (time.time(), r.status) )
+		with urllib.request.urlopen(graph_status_url) as r:
+
+			cur.execute( "INSERT INTO txn (`datetime_requested`, `return_code`) VALUES (?, ?)", (time.time(), r.status) )
+			cxn.commit()
+
+			response = json.loads(r.read().decode('utf-8'))
+
+		
+		status_kv_schema = { 'fbk_id' : 'id', 'created_timestamp' : 'created_time' }
+		status_kv_dict = { k : k for k in ('type', 'message') }
+		
+		status_kv_dict = (OrderedDict((list(status_kv_dict.items()) + list(status_kv_schema.items()))))
+
+		posts = []
+		for status in response['data']:
+
+			if "message" not in status:
+				continue
+
+			# Don't add to the DB multiple times
+			if status['id'] in fbk_cache_id:
+				print("Skipped " + status['id'])
+				continue
+
+			post = OrderedDict( {k : status[v] for k,v in status_kv_dict.items()} )
+			post['privacy_description'] = status['privacy']['description']
+
+			posts.append(post)
+
+		status_insert = []
+		for p in posts:
+			status_insert.append( ("(" + ",".join(["%s" % (v) for v in p.values()]) + ")") )
+
+		# SQL
+		sql_status_insert = """INSERT INTO posts 
+		(%s) 
+		VALUES 
+		(:fbk_id, :created_timestamp, :type, :message, :privacy_description)
+		;""" % (",".join( ('fbk_id', 'created_timestamp', 'type', 'message', 'privacy_description') ))
+		# END SQL
+
+		cur.executemany( sql_status_insert, posts )
 		cxn.commit()
 
-		response = json.loads(r.read().decode('utf-8'))
+		graph_status_url = response['paging']['next']
 
-	
-	status_kv_schema = { 'fbk_id' : 'id', 'created_timestamp' : 'created_time' }
-	status_kv_dict = { k : k for k in ('type', 'message') }
-	
-	status_kv_dict = (OrderedDict((list(status_kv_dict.items()) + list(status_kv_schema.items()))))
+		iteration = iteration + 1
 
-	posts = []
-	for status in response['data']:
-
-		if "message" not in status:
-			continue
-
-		# Don't add to the DB multiple times
-		if status['id'] in fbk_cache_id:
-			print("Skipped " + status['id'])
-			continue
-
-		post = OrderedDict( {k : status[v] for k,v in status_kv_dict.items()} )
-		post['privacy_description'] = status['privacy']['description']
-
-		posts.append(post)
-
-	status_insert = []
-	for p in posts:
-		status_insert.append( ("(" + ",".join(["%s" % (v) for v in p.values()]) + ")") )
-
-	# SQL
-	sql_status_insert = """INSERT INTO posts 
-	(%s) 
-	VALUES 
-	(:fbk_id, :created_timestamp, :type, :message, :privacy_description)
-	;""" % (",".join( ('fbk_id', 'created_timestamp', 'type', 'message', 'privacy_description') ))
-	# END SQL
-
-	cur.executemany( sql_status_insert, posts )
-	cxn.commit()
-
-
-	cur.execute("select * from posts")
 
 	cxn.close()
 

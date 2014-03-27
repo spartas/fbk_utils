@@ -4,5 +4,7 @@
 		"client_id" : 0,
 		"update_freq" : 14400,
 		"access_token" : "### Replace this string with the access token ###"
-	}
+	},
+	"tagline" 	: "",
+	"name"		: "### Replace this string with your name ###"
 }
