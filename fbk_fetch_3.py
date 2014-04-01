@@ -34,8 +34,11 @@
 #
 #		* Issue requests for paginated requests to support getting a larger set of un-seen requests. This is currently
 #			hard-coded, but will be configurable in a future version.
+#		
+#		Version 1.3 [April 1st, 2014]
+#		* Added a --verbosity/-v option and a debug_print method, which respects verbosity levels.
 #
-#		* 
+#		* Clarified some of the textual output.
 #
 # 		NOTE: argparse may or may not be included with your Python distribution. This program 
 # 					relies on both, and will not run without them.
@@ -52,6 +55,11 @@ import urllib.request
 import time
 from collections import OrderedDict
 from fbk_config import fbk_config
+
+def debug_print(msg, verbose_threshold):
+	if args.verbosity:
+		if args.verbosity >= verbose_threshold:
+			print(msg)
 
 
 def fbk_cache( ):
@@ -94,7 +102,7 @@ def fbk_cache( ):
 			if last_cache_time:
 				last_cache_time = last_cache_time[0]
 				if time.time() - last_cache_time < obj_config['graph']['update_freq']:
-					print( "Using cache data instead.")
+					print( "Fetch request aborted. Use cache data. You may override with -R")
 					sys.exit(12)
 
 
@@ -131,7 +139,7 @@ def fbk_cache( ):
 
 			# Don't add to the DB multiple times
 			if status['id'] in fbk_cache_id:
-				print("Skipped " + status['id'])
+				debug_print("Skipped " + status['id'], 2)
 				continue
 
 			post = OrderedDict( {k : status[v] for k,v in status_kv_dict.items()} )
@@ -158,6 +166,10 @@ def fbk_cache( ):
 
 		iteration = iteration + 1
 
+		if len(posts) > 0:
+			print("Inserted %s updated posts" % len(posts))
+		else:
+			print("No additional posts were fetched.")
 
 	cxn.close()
 
@@ -202,7 +214,10 @@ if __name__ == "__main__":
 	parser.add_argument('-f', '--config-file', metavar='CONFIG_FILE', 
 			help='A JSON-structured file containing configuration directives to use for the script')
 
-	parser.add_argument('--version', action='version', version='%(prog)s 1.1')
+	parser.add_argument('-v', '--verbosity', action="count",
+			help="Increase output verbosity")
+
+	parser.add_argument('--version', action='version', version='%(prog)s 1.3')
 
 	args = parser.parse_args()
 
