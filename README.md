@@ -53,6 +53,12 @@ Utils
 	_sanitize with the source from the local cache. Tread carefully when using the 
 	hybrid output, because it doesn't work well and should be re-written.
 
+* fbk_scrape_likes_3.py
+
+	Adds "like" data to the local db. This is a separate table that includes post_id and user_id.
+	NOTE: In order for this data to be generated, fbk_fetch_3 must be run first.
+	
+
 Data
 ----
 
@@ -63,6 +69,15 @@ Data
 	work properly if this file doesn't exist.
 
 
+Updates
+-------
+
+	2016: 
+		* Updated fbk_publish to support BS4. 
+		* Added fbk_scrape_likes_3, to pull "likes". NOTE: 
+			fbk_publish_3 must be run before scrape_likes.
+		* Cleaned up fbk_publish_3
+
 Tim Wright
-2011–14
+2011–16
 

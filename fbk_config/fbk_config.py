@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 import os 
 import json
+import urllib
+import urllib.request
+import sqlite3
+import sys
 
+obj_config = None
 default_obj_config = obj_config = {
 	"timefilter"	: {},
 	"albums" 		: [],
@@ -9,7 +14,23 @@ default_obj_config = obj_config = {
 	"graph"			: {},
 }
 
-def parse_config( str_configpath ):
+def validate_access_token( obj_config ):
+	#obj_config['graph']['access_token'] = "blarg"
+
+	if not obj_config['graph']['access_token']:
+		print("No access_token was specified. Unable to process requests.")
+		sys.exit(3)
+
+
+
+	url_token_req = "https://www.facebook.com/dialog/oauth?client_id=%s&redirect_uri=https://www.facebook.com/connect/login_success.html&response_type=token" % (obj_config['graph']['client_id'])
+	#res = urllib.request.urlopen(url_token_req)
+	#print(res.read())
+
+
+	return obj_config
+
+def parse_config( str_configpath, validate_token=False ):
 	if( not os.path.isfile(str_configpath)):
 		print("The specified config filter file, %s, does not exist." % (str_configpath))
 		sys.exit(1)
@@ -27,7 +48,10 @@ def parse_config( str_configpath ):
 	for k in obj_config['timefilter']:
 		temp_timefilter.extend(obj_config['timefilter'][k])
 
-	obj_config['timefilter'] = temp_timefilter		
+	obj_config['timefilter'] = temp_timefilter
+
+	if( validate_token ):
+		obj_config = validate_access_token( obj_config )
 
 	return obj_config
 

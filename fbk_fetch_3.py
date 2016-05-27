@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#! /usr/bin/env python3.4
 
 # fbk_fetch_3.py -- Uses the Facebook Graph API to grab and store posts locally. 
 #
@@ -55,16 +55,135 @@ import urllib.request
 import time
 from collections import OrderedDict
 from fbk_config import fbk_config
+import sqlite3
 
 def debug_print(msg, verbose_threshold):
 	if args.verbosity:
 		if args.verbosity >= verbose_threshold:
 			print(msg)
 
+def fbk_fetch_prior( ):
+
+	cxn = sqlite3.connect( os.path.join(config_dir, 'fbk_cache.db') )
+	cur = cxn.cursor()
+
+	sql_fetch_query = """SELECT `created_timestamp` FROM `posts`
+	ORDER BY `created_timestamp` ASC LIMIT 1"""
+	cur.execute(sql_fetch_query)
+
+	str_earliest_ts = cur.fetchone()[0]
+	earliest_ts = int(datetime.strptime(str_earliest_ts, "%Y-%m-%dT%H:%M:%S%z").strftime('%s'))
+	print(str_earliest_ts)
+	fbk_fetch_insert(until=earliest_ts, limit=200)
+	cxn.close()
+
+	sys.exit(32)
+
+	return
+
+def fbk_insert_response( res, fbk_cache_id=[] ):
+	cxn = sqlite3.connect( os.path.join(config_dir, 'fbk_cache.db') )
+	cur = cxn.cursor()
+
+	status_kv_schema = { 'fbk_id' : 'id', 'created_timestamp' : 'created_time' }
+	status_kv_dict = { k : k for k in ('type', 'message') }
+	
+	status_kv_dict = (OrderedDict((list(status_kv_dict.items()) + list(status_kv_schema.items()))))
+
+	posts = []
+	skipped = 0
+	invalid = 0
+	for status in res['data']:
+
+		if "message" not in status:
+			invalid += 1
+			continue
+
+		if "privacy" not in status:
+			invalid += 1
+			continue
+
+		if "description" not in status['privacy']:
+			invalid += 1
+			continue
+
+		#process_post_likes(cxn, status['id'], status['likes'])
+
+		# Don't add to the DB multiple times
+		if status['id'] in fbk_cache_id:
+			skipped += 1
+			continue
+
+		post = OrderedDict( {k : status[v] for k,v in status_kv_dict.items()} )
+		post['privacy_description'] = status['privacy']['description']
+
+		posts.append(post)
+
+	debug_print("Skipped, %s posts; invalid" % (invalid), 2)
+	debug_print("Skipped, %s posts; previously added" % (skipped), 3)
+
+	status_insert = []
+	for p in posts:
+		status_insert.append( ("(" + ",".join(["%s" % (v) for v in p.values()]) + ")") )
+
+	# SQL
+	sql_status_insert = """INSERT INTO posts 
+	(%s) 
+	VALUES 
+	(:fbk_id, :created_timestamp, :type, :message, :privacy_description)
+	;""" % (",".join( ('fbk_id', 'created_timestamp', 'type', 'message', 'privacy_description') ))
+	# END SQL
+
+	cur.executemany( sql_status_insert, posts )
+	cxn.commit()
+
+	cxn.close()
+	return (invalid,skipped,len(posts))
+
+def fbk_fetch_url(url):
+	cxn = sqlite3.connect( os.path.join(config_dir, 'fbk_cache.db') )
+	cur = cxn.cursor()
+
+	debug_print("Fetch URL: %s" % (url), 4)
+
+	with urllib.request.urlopen(url) as r:
+
+		cur.execute( "INSERT INTO txn (`datetime_requested`, `return_code`) VALUES (?, ?)", (time.time(), r.status) )
+		cxn.commit()
+
+		response = json.loads(r.read().decode('utf-8'))
+	
+	debug_print("Loaded %s responses" % (len(response['data'])), 3)
+	cxn.close()
+
+	return response
+
+def fbk_fetch_insert( endpoint="posts", type_="status", fields=['id','message','privacy','type','likes'], since=None, until=None, limit=None, **kwargs):
+
+	cxn = sqlite3.connect( os.path.join(config_dir, 'fbk_cache.db') )
+	cur = cxn.cursor()
+
+	# Set up fbk_cache_id
+	cur.execute("SELECT fbk_id FROM posts")
+	fbk_cache_id = [x for l in cur.fetchall() for x in l]
+
+	url_params = (endpoint, obj_config['graph']['access_token'], type_, ",".join(fields))
+	url = "https://graph.facebook.com/me/%s?access_token=%s&type=%s&fields=%s" % url_params
+
+	if(since):
+		url += "&since=%s" % (since)
+	if(limit):
+		url += "&limit=%s" % (limit)
+	if(until):
+		url += "&until=%s" % (until)
+
+	fbk_insert_response( fbk_fetch_url(url), fbk_cache_id)
+
+	cxn.close()
+
+	return
 
 def fbk_cache( ):
-	import sqlite3
-
 	#if ( use_configdir and os.path.exists(os.path.join(config_dir,'fbk_cache.db')) ):
 	cxn = sqlite3.connect( os.path.join(config_dir, 'fbk_cache.db') )
 	cur = cxn.cursor()
@@ -90,20 +209,21 @@ def fbk_cache( ):
 	"""
 	cur.execute( sql_posts_create )
 
+	last_cache_time = None
+	if args.ignore_last_cache_time == False: 
+		if obj_config['graph']['update_freq']:
+			if obj_config['graph']['update_freq'] > 0:
 
-	if obj_config['graph']['update_freq']:
-		if obj_config['graph']['update_freq'] > 0:
+				sql_cache_query = "SELECT `datetime_requested` FROM `txn` WHERE `return_code`=200 ORDER BY `id` DESC LIMIT 1"
+				cur.execute(sql_cache_query)
 
-			sql_cache_query = "SELECT `datetime_requested` FROM `txn` WHERE `return_code`=200 ORDER BY `id` DESC LIMIT 1"
-			cur.execute(sql_cache_query)
+				last_cache_time = cur.fetchone()
 
-			last_cache_time = cur.fetchone()
-
-			if last_cache_time:
-				last_cache_time = last_cache_time[0]
-				if time.time() - last_cache_time < obj_config['graph']['update_freq']:
-					print( "Fetch request aborted. Use cache data. You may override with -R")
-					sys.exit(12)
+				if last_cache_time:
+					last_cache_time = last_cache_time[0]
+					if not force_update and time.time() - last_cache_time < obj_config['graph']['update_freq']:
+						print( "Fetch request aborted. Use cache data. You may override with -R")
+						sys.exit(12)
 
 
 	# Set up fbk_cache_id
@@ -111,63 +231,34 @@ def fbk_cache( ):
 	fbk_cache_id = [x for l in cur.fetchall() for x in l]
 
 
-	graph_status_url = "https://graph.facebook.com/me/posts?access_token=%s&type=status&fields=id,message,privacy,type&limit=200" % (obj_config['graph']['access_token'])
+	graph_status_url = "https://graph.facebook.com/me/posts?access_token=%s&type=status&fields=id,message,privacy,type,likes" % (obj_config['graph']['access_token'])
+
+	if last_cache_time is not None:
+		graph_status_url += "&since=%s" % ( int(last_cache_time) )
+	#else:
+	#	graph_status_url += "&limit=200"
+
+	debug_print("Fetch URL: %s" % (graph_status_url), 4)
+
 
 	# 
 	iteration = 0
 	fetch_loop_max = 1 # At some point in the future, this will represent a complete fetch loop
-	while iteration < fetch_loop_max:
+	while iteration < fetch_loop_max and graph_status_url:
 
-		with urllib.request.urlopen(graph_status_url) as r:
+		response = fbk_fetch_url(graph_status_url)
 
-			cur.execute( "INSERT INTO txn (`datetime_requested`, `return_code`) VALUES (?, ?)", (time.time(), r.status) )
-			cxn.commit()
+		(num_invalid,num_skipped,num_inserted) = fbk_insert_response( response, fbk_cache_id)
 
-			response = json.loads(r.read().decode('utf-8'))
-
-		
-		status_kv_schema = { 'fbk_id' : 'id', 'created_timestamp' : 'created_time' }
-		status_kv_dict = { k : k for k in ('type', 'message') }
-		
-		status_kv_dict = (OrderedDict((list(status_kv_dict.items()) + list(status_kv_schema.items()))))
-
-		posts = []
-		for status in response['data']:
-
-			if "message" not in status:
-				continue
-
-			# Don't add to the DB multiple times
-			if status['id'] in fbk_cache_id:
-				debug_print("Skipped " + status['id'], 2)
-				continue
-
-			post = OrderedDict( {k : status[v] for k,v in status_kv_dict.items()} )
-			post['privacy_description'] = status['privacy']['description']
-
-			posts.append(post)
-
-		status_insert = []
-		for p in posts:
-			status_insert.append( ("(" + ",".join(["%s" % (v) for v in p.values()]) + ")") )
-
-		# SQL
-		sql_status_insert = """INSERT INTO posts 
-		(%s) 
-		VALUES 
-		(:fbk_id, :created_timestamp, :type, :message, :privacy_description)
-		;""" % (",".join( ('fbk_id', 'created_timestamp', 'type', 'message', 'privacy_description') ))
-		# END SQL
-
-		cur.executemany( sql_status_insert, posts )
-		cxn.commit()
-
-		graph_status_url = response['paging']['next']
+		if not force_update:
+			graph_status_url = response['paging']['next']
+		else:
+			graph_status_url = None
 
 		iteration = iteration + 1
 
-		if len(posts) > 0:
-			print("Inserted %s updated posts" % len(posts))
+		if num_inserted > 0:
+			print("Inserted %s updated posts" % num_inserted)
 		else:
 			print("No additional posts were fetched.")
 
@@ -186,6 +277,10 @@ def mktreeoutput( basedirname ):
 	os.mkdir( outfile_path )
 
 	return outfile_path
+
+def process_post_likes(cxn, id, likes):
+	print("Process likes.")
+	return
 
 def process_graph():
 
@@ -211,6 +306,9 @@ if __name__ == "__main__":
 	parser.add_argument('-R', '--force', action="store_true",
 			help='Force a re-update of the local data, despite the cache timeout.')
 
+	parser.add_argument('-T', '--ignore-last-cache-time', action="store_true",
+			help='Ignore the local cache timeout.')
+
 	parser.add_argument('-f', '--config-file', metavar='CONFIG_FILE', 
 			help='A JSON-structured file containing configuration directives to use for the script')
 
@@ -222,8 +320,12 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 
 
-	config_dir = os.path.join( os.path.expanduser('~'), '.fbk' )
+	config_dir = ".fbk"
 	use_configdir = os.path.exists( config_dir )
+	
+	if use_configdir == False:
+		config_dir = os.path.join( os.path.expanduser('~'), '.fbk' )
+		use_configdir = os.path.exists( config_dir )
 
 	# Default obj_config
 	
@@ -234,7 +336,7 @@ if __name__ == "__main__":
 		file_configfile = os.path.join(config_dir, 'config.json')
 
 	if(file_configfile):
-		obj_config = fbk_config.parse_config( file_configfile )
+		obj_config = fbk_config.parse_config( file_configfile, True )
 
 	if(args.access_token):
 		obj_config['graph']['access_token'] = args.access_token
@@ -243,7 +345,10 @@ if __name__ == "__main__":
 		obj_config['graph']['client_id'] = args.client_id
 
 	if(args.force):
-		obj_config['graph']['update_freq'] = 0
+		force_update = True
+	else:
+		force_update = False
+		#obj_config['graph']['update_freq'] = 0
 
 	process_graph()
 
